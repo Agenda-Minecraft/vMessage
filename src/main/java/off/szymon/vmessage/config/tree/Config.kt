@@ -21,6 +21,8 @@ import org.spongepowered.configurate.objectmapping.meta.Comment
 class MainConfig {
     var messages = MessagesConfig()
     var commands = CommandsConfig()
+    @Comment("List of servers where PlaceholderAPI parsing should be disabled\nIf a player is on one of these servers, PAPI placeholders will be ignored.\nExample: [\"login\", \"auth\"]")
+    var papiExcludedServers: MutableList<String> = mutableListOf()
     @Comment("If you want to use additional LuckPerms meta values you can add them here\nYou can then use them in placeholder format like this: &custom_name& [AMPERSAND not PERCENT]")
     var luckPermsMeta = LuckPermsMetaConfig()
     @Comment("If you want to display a different name for a server you can add it here\nIt will then be used in the messages above instead of the server's actual name")
@@ -43,10 +45,14 @@ class ChatConfig {
     var enabled = true
     @Comment("%player% - Player\n%message% - Message\n%server% - Player's Current Server\n%prefix% - LuckPerms Prefix\n%suffix% - LuckPerms Suffix")
     var format = "%prefix% <b>%player%:</b> %message%"
+    @Comment("Format used when the player is on a server listed in papi-excluded-servers (skips PAPI parsing)")
+    var formatNoPapi = "%prefix% <b>%player%:</b> %message%"
     @Comment("Whether to allow players to use MiniMessage in their messages")
     var allowMiniMessage = false
     @Comment("The message to send when a muted player tries to send a message\n%player% - Player\n%message% - Message\n%server% - Player's Current Server\n%prefix% - LuckPerms Prefix\n%suffix% - LuckPerms Suffix\n%reason% - Reason for muting\n%end-date% - End date of the mute\n%moderator% - Moderator who muted the player")
     var mutedMessage = "<red>You are muted and cannot send messages.</red>"
+    @Comment("The muted message used when the player is on a server listed in papi-excluded-servers")
+    var mutedMessageNoPapi = "<red>You are muted and cannot send messages.</red>"
 }
 
 @ConfigSerializable

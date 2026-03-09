@@ -19,6 +19,7 @@ import com.velocitypowered.api.event.player.ServerPostConnectEvent;
 import com.velocitypowered.api.proxy.Player;
 import com.velocitypowered.api.proxy.server.RegisteredServer;
 import net.kyori.adventure.text.minimessage.MiniMessage;
+import net.william278.papiproxybridge.api.PlaceholderAPI;
 import off.szymon.vmessage.compatibility.LuckPermsCompatibilityProvider;
 import off.szymon.vmessage.compatibility.mute.MutePluginCompatibilityProvider;
 import off.szymon.vmessage.config.ConfigManager;
@@ -28,58 +29,89 @@ import java.util.Optional;
 
 public class Listener {
 
+
     @Subscribe
     private void onMessageSend(PlayerChatEvent e) {
-        //noinspection deprecation - SignedVelocity is installed
         e.setResult(PlayerChatEvent.ChatResult.denied());
 
         Player player = e.getPlayer();
-
         MutePluginCompatibilityProvider mpcp = VMessagePlugin.get().getMutePluginCompatibilityProvider();
 
         mpcp.isMuted(player).thenAcceptAsync(isMuted -> {
             if (isMuted) {
-                mpcp.getMute(player).thenAcceptAsync(mute -> {
-                    Broadcaster broadcaster = VMessagePlugin.get().getBroadcaster();
-
-                    String msg = ConfigManager.get().getConfig().getMessages().getChat().getMutedMessage();
-                    String serverName = player.getCurrentServer()
-                            .map(server -> broadcaster.parseAlias(server.getServerInfo().getName()))
-                            .orElse("Unknown");
-
-                    String reason = mute.reason();
-                    String endDate = mute.endDateString();
-                    String moderator = mute.moderator();
-
-                    msg = msg
-                            .replace("%player%", player.getUsername())
-                            .replace("%message%", e.getMessage())
-                            .replace("%server%", serverName)
-                            .replace("%reason%", reason)
-                            .replace("%end-date%", endDate)
-                            .replace("%moderator%", moderator);
-
-                    LuckPermsCompatibilityProvider lp = VMessagePlugin.get().getLuckPermsCompatibilityProvider();
-
-                    if (lp != null) {
-                        LuckPermsCompatibilityProvider.PlayerData data = lp.getMetaData(player);
-                        msg = msg
-                                .replace("%suffix%", Optional.ofNullable(data.metaData().getSuffix()).orElse(""))
-                                .replace("%prefix%", Optional.ofNullable(data.metaData().getPrefix()).orElse(""));
-
-                        for (Map.Entry<String, String> entry : broadcaster.getMetaPlaceholders().entrySet()) {
-                            msg = msg.replace(
-                                    entry.getKey(),
-                                    Optional.ofNullable(data.metaData().getMetaValue(entry.getValue())).orElse("")
-                            );
-                        }
-                    }
-                    player.sendMessage(MiniMessage.miniMessage().deserialize(msg));
-                });
+                handleMutedPlayer(player, e.getMessage());
             } else {
-                VMessagePlugin.get().getBroadcaster().message(e.getPlayer(), e.getMessage());
+                VMessagePlugin.get().getBroadcaster().message(player, e.getMessage());
             }
         });
+    }
+
+    private void handleMutedPlayer(Player player, String originalMessage) {
+        VMessagePlugin.get().getMutePluginCompatibilityProvider().getMute(player).thenAcceptAsync(mute -> {
+            Broadcaster broadcaster = VMessagePlugin.get().getBroadcaster();
+
+            String rawServerName = player.getCurrentServer().map(s -> s.getServerInfo().getName()).orElse("");
+            java.util.List<String> excludedServers = ConfigManager.get().getConfig().getPapiExcludedServers();
+            boolean isExcluded = excludedServers != null && excludedServers.contains(rawServerName);
+
+            String msgFormat = isExcluded ?
+                    ConfigManager.get().getConfig().getMessages().getChat().getMutedMessageNoPapi() :
+                    ConfigManager.get().getConfig().getMessages().getChat().getMutedMessage();
+
+            String serverAlias = player.getCurrentServer()
+                    .map(server -> broadcaster.parseAlias(server.getServerInfo().getName()))
+                    .orElse("Unknown");
+
+            String processed = msgFormat
+                    .replace("%player%", player.getUsername())
+                    .replace("%message%", originalMessage)
+                    .replace("%server%", serverAlias)
+                    .replace("%reason%", mute.reason())
+                    .replace("%end-date%", mute.endDateString())
+                    .replace("%moderator%", mute.moderator());
+
+            final String finalProcessed = applyLuckPermsPlaceholders(player, processed, broadcaster);
+
+            if (isExcluded || !player.getCurrentServer().isPresent()) {
+                player.sendMessage(MiniMessage.miniMessage().deserialize(finalProcessed));
+                return;
+            }
+
+            try {
+                PlaceholderAPI papi =
+                        net.william278.papiproxybridge.api.PlaceholderAPI.createInstance();
+
+                papi.formatPlaceholders(finalProcessed, player.getUniqueId())
+                        .thenAccept(finalMsg -> {
+                            player.sendMessage(MiniMessage.miniMessage().deserialize(finalMsg));
+                        })
+                        .exceptionally(ex -> {
+                            player.sendMessage(MiniMessage.miniMessage().deserialize(finalProcessed));
+                            return null;
+                        });
+
+            } catch (Throwable t) {
+                player.sendMessage(MiniMessage.miniMessage().deserialize(finalProcessed));
+            }
+        });
+    }
+
+    private String applyLuckPermsPlaceholders(Player player, String text, Broadcaster broadcaster) {
+        LuckPermsCompatibilityProvider lp = VMessagePlugin.get().getLuckPermsCompatibilityProvider();
+        if (lp == null) return text;
+
+        LuckPermsCompatibilityProvider.PlayerData data = lp.getMetaData(player);
+        String result = text
+                .replace("%suffix%", Optional.ofNullable(data.metaData().getSuffix()).orElse(""))
+                .replace("%prefix%", Optional.ofNullable(data.metaData().getPrefix()).orElse(""));
+
+        for (Map.Entry<String, String> entry : broadcaster.getMetaPlaceholders().entrySet()) {
+            result = result.replace(
+                    entry.getKey(),
+                    Optional.ofNullable(data.metaData().getMetaValue(entry.getValue())).orElse("")
+            );
+        }
+        return result;
     }
 
     @Subscribe
@@ -97,8 +129,7 @@ public class Listener {
         if (pre == null) {
             VMessagePlugin.get().getBroadcaster().join(e.getPlayer());
         } else {
-            VMessagePlugin.get().getBroadcaster().change(e.getPlayer(),pre.getServerInfo().getName());
+            VMessagePlugin.get().getBroadcaster().change(e.getPlayer(), pre.getServerInfo().getName());
         }
     }
-
 }

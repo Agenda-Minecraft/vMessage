@@ -34,6 +34,7 @@ repositories {
     maven("https://mvn-repo.arim.space/gpl3/")
     maven("https://mvn-repo.arim.space/affero-gpl3/")
     maven("https://repo.szymonoff.me/repository/fishy-dependencies/")
+    maven ("https://repo.william278.net/releases/")
 }
 
 dependencies {
@@ -43,6 +44,7 @@ dependencies {
     - It is hosted in my personal Maven repository at https://repo.szymonoff.me/repository/fishy-dependencies/
     - It is based on this PR: https://github.com/SpongePowered/Configurate/pull/410 by @Tim203
      */
+    compileOnly("net.william278:papiproxybridge:1.7.2")
     implementation("org.spongepowered:configurate-core:4.2.0+YAML_COMMENTS")
     implementation("org.spongepowered:configurate-yaml:4.2.0+YAML_COMMENTS") {
         exclude(group = "org.spongepowered", module = "configurate-core")

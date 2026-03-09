@@ -14,6 +14,7 @@ package off.szymon.vmessage;
 
 import com.velocitypowered.api.proxy.Player;
 import net.kyori.adventure.text.minimessage.MiniMessage;
+import net.william278.papiproxybridge.api.PlaceholderAPI;
 import off.szymon.vmessage.compatibility.LuckPermsCompatibilityProvider;
 import off.szymon.vmessage.config.ConfigManager;
 import org.jetbrains.annotations.Nullable;
@@ -26,9 +27,9 @@ import java.util.Set;
 
 public class Broadcaster {
 
-    private final HashMap<String,String> serverAliases; // Server name, Server alias
+    private final HashMap<String, String> serverAliases; // Server name, Server alias
     private final LuckPermsCompatibilityProvider lp;
-    private final HashMap<String,String> metaPlaceholders; // Placeholder, Meta key
+    private final HashMap<String, String> metaPlaceholders; // Placeholder, Meta key
 
     public Broadcaster() {
         serverAliases = new HashMap<>();
@@ -41,130 +42,132 @@ public class Broadcaster {
         reloadMetaPlaceholders();
     }
 
-    public void message(Player player, String message) {
-        if (!ConfigManager.get().getConfig().getMessages().getChat().getEnabled()) return;
+    /**
+     * 核心解析逻辑：先处理本地变量，再异步处理 PAPI 变量
+     */
+    private void finalizeAndBroadcast(String rawMsg, @Nullable Player player) {
+        if (player == null || !player.getCurrentServer().isPresent()) {
+            VMessagePlugin.get().getServer().sendMessage(MiniMessage.miniMessage().deserialize(rawMsg));
+            return;
+        }
+        String serverName = player.getCurrentServer().get().getServerInfo().getName();
+        java.util.List<String> excludedServers = ConfigManager.get().getConfig().getPapiExcludedServers();
 
-        String msg = ConfigManager.get().getConfig().getMessages().getChat().getFormat();
+        if (excludedServers != null && excludedServers.contains(serverName)) {
+            VMessagePlugin.get().getServer().sendMessage(MiniMessage.miniMessage().deserialize(rawMsg));
+            return;
+        }
+        // --------------------------------------
 
-        //noinspection OptionalGetWithoutIsPresent
-        msg = msg
+        try {
+           PlaceholderAPI api =
+                   PlaceholderAPI.createInstance();
+
+            api.formatPlaceholders(rawMsg, player.getUniqueId())
+                    .thenAccept(formatted -> {
+                        VMessagePlugin.get().getServer().sendMessage(MiniMessage.miniMessage().deserialize(formatted));
+                    })
+                    .exceptionally(ex -> {
+                        VMessagePlugin.get().getServer().sendMessage(MiniMessage.miniMessage().deserialize(rawMsg));
+                        return null;
+                    });
+
+        } catch (Throwable t) {
+            VMessagePlugin.get().getServer().sendMessage(MiniMessage.miniMessage().deserialize(rawMsg));
+        }
+    }
+    private String applyCommonPlaceholders(String format, Player player) {
+        String msg = format
                 .replace("%player%", player.getUsername())
-                .replace("%message%", escapeMiniMessage(message))
-                .replace("%server%", parseAlias(player.getCurrentServer().get().getServerInfo().getName()));
+                .replace("%server%", parseAlias(player.getCurrentServer().map(s -> s.getServerInfo().getName()).orElse("Unknown")));
+
         if (lp != null) {
             LuckPermsCompatibilityProvider.PlayerData data = lp.getMetaData(player);
             msg = msg
                     .replace("%suffix%", Optional.ofNullable(data.metaData().getSuffix()).orElse(""))
                     .replace("%prefix%", Optional.ofNullable(data.metaData().getPrefix()).orElse(""));
 
-            for (Map.Entry<String,String> entry : metaPlaceholders.entrySet()) {
-                String metaValue = Optional.ofNullable(data.metaData().getMetaValue(entry.getValue())).orElse("");
-                msg = msg.replace(
-                        entry.getKey(),
-                        metaValue
-                );
+            for (Map.Entry<String, String> entry : metaPlaceholders.entrySet()) {
+                msg = msg.replace(entry.getKey(), Optional.ofNullable(data.metaData().getMetaValue(entry.getValue())).orElse(""));
             }
         }
-        VMessagePlugin.get().getServer().sendMessage(MiniMessage.miniMessage().deserialize(msg));
+        return msg;
+    }
+
+    public void message(Player player, String message) {
+        if (!ConfigManager.get().getConfig().getMessages().getChat().getEnabled()) return;
+
+        String serverName = player.getCurrentServer().map(s -> s.getServerInfo().getName()).orElse("");
+
+        java.util.List<String> excludedServers = ConfigManager.get().getConfig().getPapiExcludedServers();
+        boolean isExcluded = excludedServers != null && excludedServers.contains(serverName);
+
+        String format;
+        if (isExcluded) {
+            format = ConfigManager.get().getConfig().getMessages().getChat().getFormatNoPapi();
+        } else {
+            format = ConfigManager.get().getConfig().getMessages().getChat().getFormat();
+        }
+        String msg = applyCommonPlaceholders(format, player)
+                .replace("%message%", escapeMiniMessage(message));
+        finalizeAndBroadcast(msg, player);
     }
 
     public void join(Player player) {
         if (!ConfigManager.get().getConfig().getMessages().getJoin().getEnabled()) return;
-        if (player.hasPermission("vmessage.silent.join")) {
-            VMessagePlugin.get().getLogger().info("{} has silent join permission, not broadcasting join message", player.getUsername());
-            return;
-        }
+        if (player.hasPermission("vmessage.silent.join")) return;
 
-        String msg = ConfigManager.get().getConfig().getMessages().getJoin().getFormat();
-        //noinspection OptionalGetWithoutIsPresent
-        msg = msg
-                .replace("%player%", player.getUsername())
-                .replace("%server%", parseAlias(player.getCurrentServer().get().getServerInfo().getName()));
-
-        if (lp != null) {
-            LuckPermsCompatibilityProvider.PlayerData data = lp.getMetaData(player);
-            msg = msg
-                    .replace("%suffix%", Optional.ofNullable(data.metaData().getSuffix()).orElse(""))
-                    .replace("%prefix%", Optional.ofNullable(data.metaData().getPrefix()).orElse(""));
-
-            for (Map.Entry<String,String> entry : metaPlaceholders.entrySet()) {
-                msg = msg.replace(
-                        entry.getKey(),
-                        Optional.ofNullable(data.metaData().getMetaValue(entry.getValue())).orElse("")
-                );
-            }
-        }
-        VMessagePlugin.get().getServer().sendMessage(MiniMessage.miniMessage().deserialize(msg));
+        String format = ConfigManager.get().getConfig().getMessages().getJoin().getFormat();
+        finalizeAndBroadcast(applyCommonPlaceholders(format, player), player);
     }
 
     public void leave(Player player) {
         if (!ConfigManager.get().getConfig().getMessages().getLeave().getEnabled()) return;
-        if (player.hasPermission("vmessage.silent.leave")) {
-            VMessagePlugin.get().getLogger().info("{} has silent leave permission, not broadcasting leave message", player.getUsername());
-            return;
-        }
+        if (player.hasPermission("vmessage.silent.leave")) return;
 
-        String msg = ConfigManager.get().getConfig().getMessages().getLeave().getFormat();
+        String format = ConfigManager.get().getConfig().getMessages().getLeave().getFormat();
         String serverName = player.getCurrentServer()
                 .map(server -> server.getServerInfo().getName())
                 .map(this::parseAlias)
                 .orElse(null);
 
-        if (serverName == null) {
-            return; // invalid server connection, do not send leave message
-        }
+        if (serverName == null) return;
 
-        msg = msg
-                .replace("%player%", player.getUsername())
-                .replace("%server%", serverName);
-
-        if (lp != null) {
-            LuckPermsCompatibilityProvider.PlayerData data = lp.getMetaData(player);
-            msg = msg
-                    .replace("%suffix%", Optional.ofNullable(data.metaData().getSuffix()).orElse(""))
-                    .replace("%prefix%", Optional.ofNullable(data.metaData().getPrefix()).orElse(""));
-
-            for (Map.Entry<String,String> entry : metaPlaceholders.entrySet()) {
-                msg = msg.replace(
-                        entry.getKey(),
-                        Optional.ofNullable(data.metaData().getMetaValue(entry.getValue())).orElse("")
-                );
-            }
-        }
-        VMessagePlugin.get().getServer().sendMessage(MiniMessage.miniMessage().deserialize(msg));
+        String msg = applyCommonPlaceholders(format, player);
+        finalizeAndBroadcast(msg, player);
     }
 
     public void change(Player player, String oldServer) {
         if (!ConfigManager.get().getConfig().getMessages().getChange().getEnabled()) return;
-        if (player.hasPermission("vmessage.silent.change")) {
-            VMessagePlugin.get().getLogger().info("{} has silent change permission, not broadcasting change message", player.getUsername());
-            return;
+        if (player.hasPermission("vmessage.silent.change")) return;
+
+        String format = ConfigManager.get().getConfig().getMessages().getChange().getFormat();
+        String msg = applyCommonPlaceholders(format, player)
+                .replace("%old_server%", parseAlias(oldServer))
+                .replace("%new_server%", parseAlias(player.getCurrentServer().get().getServerInfo().getName()));
+
+        finalizeAndBroadcast(msg, player);
+    }
+
+    public void broadcast(String message, @Nullable Player player) {
+        String format = ConfigManager.get().getConfig().getCommands().getBroadcast().getFormat();
+        String msg;
+
+        if (player != null) {
+            String content = ConfigManager.get().getConfig().getCommands().getBroadcast().getAllowMiniMessage()
+                    ? message : MiniMessage.miniMessage().escapeTags(message);
+            msg = applyCommonPlaceholders(format, player).replace("%message%", content);
+            finalizeAndBroadcast(msg, player);
+        } else {
+            msg = format
+                    .replace("%message%", message)
+                    .replace("%player%", "Server")
+                    .replace("%server%", "Server")
+                    .replace("%suffix%", "")
+                    .replace("%prefix%", "");
+            for (String key : metaPlaceholders.keySet()) msg = msg.replace(key, "");
+            finalizeAndBroadcast(msg, null);
         }
-
-        String msg = ConfigManager.get().getConfig().getMessages().getChange().getFormat();
-        //noinspection OptionalGetWithoutIsPresent
-        msg = msg
-                .replace("%player%", player.getUsername())
-                .replace("%new_server%", parseAlias(player.getCurrentServer().get().getServerInfo().getName()))
-                .replace("%old_server%", parseAlias(oldServer));
-
-        if (lp != null) {
-            LuckPermsCompatibilityProvider.PlayerData data = lp.getMetaData(player);
-
-            msg = msg
-                    .replace("%suffix%", Optional.ofNullable(data.metaData().getSuffix()).orElse(""))
-                    .replace("%prefix%", Optional.ofNullable(data.metaData().getPrefix()).orElse(""));
-
-
-            for (Map.Entry<String,String> entry : metaPlaceholders.entrySet()) {
-                String metaValue = Optional.ofNullable(data.metaData().getMetaValue(entry.getValue())).orElse("DEBUG_VAL");
-                msg = msg.replace(
-                        entry.getKey(),
-                        metaValue
-                );
-            }
-        }
-        VMessagePlugin.get().getServer().sendMessage(MiniMessage.miniMessage().deserialize(msg));
     }
 
     public void reload() {
@@ -176,7 +179,7 @@ public class Broadcaster {
         serverAliases.clear();
         Set<Map.Entry<Object, CommentedConfigurationNode>> aliases = ConfigManager.get().getNode("server-aliases").childrenMap().entrySet();
         for (Map.Entry<Object, CommentedConfigurationNode> entry : aliases) {
-            serverAliases.put(entry.getKey().toString(),entry.getValue().getString(""));
+            serverAliases.put(entry.getKey().toString(), entry.getValue().getString(""));
         }
     }
 
@@ -185,59 +188,14 @@ public class Broadcaster {
         if (lp != null) {
             Set<Map.Entry<Object, CommentedConfigurationNode>> metas = ConfigManager.get().getNode("luck-perms-meta").childrenMap().entrySet();
             for (Map.Entry<Object, CommentedConfigurationNode> entry : metas) {
-                metaPlaceholders.put("&"+entry.getKey().toString()+"&",entry.getValue().getString(""));
+                metaPlaceholders.put("&" + entry.getKey().toString() + "&", entry.getValue().getString(""));
             }
         }
-    }
-
-    public void broadcast(String message, @Nullable Player player) {
-        String msg = ConfigManager.get().getConfig().getCommands().getBroadcast().getFormat();
-
-        if (player != null) {
-            if (!ConfigManager.get().getConfig().getCommands().getBroadcast().getAllowMiniMessage()) {
-                msg = msg.replace("%message%", MiniMessage.miniMessage().escapeTags(message));
-            } else {
-                msg = msg.replace("%message%", message);
-            }
-            msg = msg
-                .replace("%player%", player.getUsername())
-                .replace("%server%", parseAlias(player.getCurrentServer().get().getServerInfo().getName()));
-            if (lp != null) {
-                LuckPermsCompatibilityProvider.PlayerData data = lp.getMetaData(player);
-                msg = msg
-                        .replace("%suffix%", Optional.ofNullable(data.metaData().getSuffix()).orElse(""))
-                        .replace("%prefix%", Optional.ofNullable(data.metaData().getPrefix()).orElse(""));
-
-                for (Map.Entry<String,String> entry : metaPlaceholders.entrySet()) {
-                    String metaValue = Optional.ofNullable(data.metaData().getMetaValue(entry.getValue())).orElse("");
-                    msg = msg.replace(
-                            entry.getKey(),
-                            metaValue
-                    );
-                }
-            }
-        } else {
-            msg = msg
-                .replace("%message%", message)
-                .replace("%player%", "Server")
-                .replace("%server%", "Server")
-                .replace("%suffix%", "")
-                .replace("%prefix%", "");
-            for (String key : metaPlaceholders.keySet()) {
-                msg = msg.replace(key, "");
-            }
-        }
-
-        VMessagePlugin.get().getServer().sendMessage(MiniMessage.miniMessage().deserialize(msg));
     }
 
     public String parseAlias(String serverName) {
-        String output;
-        for (Map.Entry<String,String> entry : serverAliases.entrySet()) {
-            if (serverName.equalsIgnoreCase(entry.getKey())) {
-                output = entry.getValue();
-                return output;
-            }
+        for (Map.Entry<String, String> entry : serverAliases.entrySet()) {
+            if (serverName.equalsIgnoreCase(entry.getKey())) return entry.getValue();
         }
         return serverName;
     }

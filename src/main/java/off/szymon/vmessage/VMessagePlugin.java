@@ -59,7 +59,8 @@ import java.util.Map;
                 @Dependency(id = "signedvelocity", optional = true),
                 @Dependency(id = "luckperms", optional = true),
                 @Dependency(id = "libertybans", optional = true),
-                @Dependency(id = "litebans", optional = true)
+                @Dependency(id = "litebans", optional = true),
+                @Dependency(id = "papiproxybridge", optional = false)
         }
 )
 public class VMessagePlugin {
@@ -123,7 +124,7 @@ public class VMessagePlugin {
         }
 
         /* Mute Plugin Compatibility */
-        Map<String, String> mutePlugins = Map.of("libertybans", "LibertyBans","litebans", "LiteBans");
+        Map<String, String> mutePlugins = Map.of("libertybans", "LibertyBans", "litebans", "LiteBans");
         mutePluginCompatibilityProvider = new EmptyMuteCompatibilityProvider();
         logger.info("Checking for mute plugin compatibility...");
         for (Map.Entry<String, String> entry : mutePlugins.entrySet()) {
