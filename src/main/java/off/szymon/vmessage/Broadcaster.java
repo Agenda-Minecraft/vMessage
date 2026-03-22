@@ -24,13 +24,15 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 
 public class Broadcaster {
 
     private final HashMap<String, String> serverAliases; // Server name, Server alias
     private final LuckPermsCompatibilityProvider lp;
     private final HashMap<String, String> metaPlaceholders; // Placeholder, Meta key
-
+    PlaceholderAPI papi = PlaceholderAPI.createInstance();
     public Broadcaster() {
         serverAliases = new HashMap<>();
         reloadAliases();
@@ -43,39 +45,52 @@ public class Broadcaster {
     }
 
     /**
-     * 核心解析逻辑：先处理本地变量，再异步处理 PAPI 变量
+     * 核心解析逻辑：先处理本地变量和 PAPI 变量，最后再安全地注入玩家的消息内容
+     * @param formatBase 包含格式的基础文本 (可能含有 %message%)
+     * @param messageToInject 需要注入的玩家消息文本（如果不为 null，将在 PAPI 解析后注入）
+     * @param player 相关玩家
      */
-    private void finalizeAndBroadcast(String rawMsg, @Nullable Player player) {
+    private void finalizeAndBroadcast(String formatBase, @Nullable String messageToInject, @Nullable Player player) {
+        // 生成一个唯一的 Token 防止 PAPI 的解析结果意外冲突
+        final String messageToken = messageToInject != null ? UUID.randomUUID().toString() : null;
+        final String safeFormat = messageToken != null ? formatBase.replace("%message%", messageToken) : formatBase;
+
+        java.util.function.Consumer<String> sendFinal = (parsedBase) -> {
+            String finalMsg = parsedBase;
+            if (messageToken != null && messageToInject != null) {
+                finalMsg = finalMsg.replace(messageToken, messageToInject);
+            }
+            VMessagePlugin.get().getServer().sendMessage(MiniMessage.miniMessage().deserialize(finalMsg));
+        };
+
         if (player == null || !player.getCurrentServer().isPresent()) {
-            VMessagePlugin.get().getServer().sendMessage(MiniMessage.miniMessage().deserialize(rawMsg));
+            sendFinal.accept(safeFormat);
             return;
         }
+
         String serverName = player.getCurrentServer().get().getServerInfo().getName();
         java.util.List<String> excludedServers = ConfigManager.get().getConfig().getPapiExcludedServers();
 
         if (excludedServers != null && excludedServers.contains(serverName)) {
-            VMessagePlugin.get().getServer().sendMessage(MiniMessage.miniMessage().deserialize(rawMsg));
+            sendFinal.accept(safeFormat);
             return;
         }
         // --------------------------------------
 
         try {
-           PlaceholderAPI api =
-                   PlaceholderAPI.createInstance();
-
-            api.formatPlaceholders(rawMsg, player.getUniqueId())
-                    .thenAccept(formatted -> {
-                        VMessagePlugin.get().getServer().sendMessage(MiniMessage.miniMessage().deserialize(formatted));
-                    })
+            papi.formatPlaceholders(safeFormat, player.getUniqueId())
+                    .completeOnTimeout(safeFormat, 1, TimeUnit.SECONDS)
+                    .thenAccept(sendFinal)
                     .exceptionally(ex -> {
-                        VMessagePlugin.get().getServer().sendMessage(MiniMessage.miniMessage().deserialize(rawMsg));
+                        sendFinal.accept(safeFormat);
                         return null;
                     });
 
         } catch (Throwable t) {
-            VMessagePlugin.get().getServer().sendMessage(MiniMessage.miniMessage().deserialize(rawMsg));
+            sendFinal.accept(safeFormat);
         }
     }
+
     private String applyCommonPlaceholders(String format, Player player) {
         String msg = format
                 .replace("%player%", player.getUsername())
@@ -108,9 +123,8 @@ public class Broadcaster {
         } else {
             format = ConfigManager.get().getConfig().getMessages().getChat().getFormat();
         }
-        String msg = applyCommonPlaceholders(format, player)
-                .replace("%message%", escapeMiniMessage(message));
-        finalizeAndBroadcast(msg, player);
+        String msgBase = applyCommonPlaceholders(format, player);
+        finalizeAndBroadcast(msgBase, escapeMiniMessage(message), player);
     }
 
     public void join(Player player) {
@@ -118,7 +132,7 @@ public class Broadcaster {
         if (player.hasPermission("vmessage.silent.join")) return;
 
         String format = ConfigManager.get().getConfig().getMessages().getJoin().getFormat();
-        finalizeAndBroadcast(applyCommonPlaceholders(format, player), player);
+        finalizeAndBroadcast(applyCommonPlaceholders(format, player), null, player);
     }
 
     public void leave(Player player) {
@@ -134,7 +148,7 @@ public class Broadcaster {
         if (serverName == null) return;
 
         String msg = applyCommonPlaceholders(format, player);
-        finalizeAndBroadcast(msg, player);
+        finalizeAndBroadcast(msg, null, player);
     }
 
     public void change(Player player, String oldServer) {
@@ -146,27 +160,28 @@ public class Broadcaster {
                 .replace("%old_server%", parseAlias(oldServer))
                 .replace("%new_server%", parseAlias(player.getCurrentServer().get().getServerInfo().getName()));
 
-        finalizeAndBroadcast(msg, player);
+        finalizeAndBroadcast(msg, null, player);
     }
 
     public void broadcast(String message, @Nullable Player player) {
         String format = ConfigManager.get().getConfig().getCommands().getBroadcast().getFormat();
-        String msg;
 
         if (player != null) {
             String content = ConfigManager.get().getConfig().getCommands().getBroadcast().getAllowMiniMessage()
                     ? message : MiniMessage.miniMessage().escapeTags(message);
-            msg = applyCommonPlaceholders(format, player).replace("%message%", content);
-            finalizeAndBroadcast(msg, player);
+            String msgBase = applyCommonPlaceholders(format, player);
+            // 这里将 content 剥离出来，防止被 PAPI 解析
+            finalizeAndBroadcast(msgBase, content, player);
         } else {
-            msg = format
-                    .replace("%message%", message)
+            String msg = format
                     .replace("%player%", "Server")
                     .replace("%server%", "Server")
                     .replace("%suffix%", "")
                     .replace("%prefix%", "");
             for (String key : metaPlaceholders.keySet()) msg = msg.replace(key, "");
-            finalizeAndBroadcast(msg, null);
+
+            // Server 发送的内容同理，剥离出来保证安全
+            finalizeAndBroadcast(msg, message, null);
         }
     }
 

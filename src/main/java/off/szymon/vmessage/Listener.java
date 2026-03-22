@@ -26,6 +26,7 @@ import off.szymon.vmessage.config.ConfigManager;
 
 import java.util.Map;
 import java.util.Optional;
+import java.util.concurrent.TimeUnit;
 
 public class Listener {
 
@@ -78,10 +79,10 @@ public class Listener {
             }
 
             try {
-                PlaceholderAPI papi =
-                        net.william278.papiproxybridge.api.PlaceholderAPI.createInstance();
+                PlaceholderAPI papi = PlaceholderAPI.getInstance();
 
                 papi.formatPlaceholders(finalProcessed, player.getUniqueId())
+                        .completeOnTimeout(finalProcessed, 1, TimeUnit.SECONDS)
                         .thenAccept(finalMsg -> {
                             player.sendMessage(MiniMessage.miniMessage().deserialize(finalMsg));
                         })
